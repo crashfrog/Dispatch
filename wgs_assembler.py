@@ -20,7 +20,7 @@ description = "WGS/Celera assembler, the overlap-layout-consensus workhorse for 
 
 core_load = 1 #number of CPU cores this assembler will max out
 
-supports = ('MiSeq','IonTorrent','PacBio','454')
+supports = ('MiSeq','IonTorrent','PacBio','454','Minion')
 
 def assemble(accession, path, reads1,  insert_size=400, reads2=None, data_type='MiSeq', callback=lambda s: None, fasta_file_name=None, debug=True, **kwargs):
 	working_path = tempfile.mkdtemp()
@@ -44,7 +44,7 @@ def assemble(accession, path, reads1,  insert_size=400, reads2=None, data_type='
 		else:
 			buffer = open(os.devnull, 'w')
 	
-		asm_path = os.path.join(path, '../asm')
+
 		
 
 		frg = os.path.join(working_path, "{}.frg".format(accession))
@@ -53,9 +53,11 @@ def assemble(accession, path, reads1,  insert_size=400, reads2=None, data_type='
 		#interleave reads and produce FRG file
 		callback('running fastqToCA')
 		if 'MiSeq' in data_type:
-			buffer.write(subprocess.check_output("fastqToCA -insertsize {} 20 -libraryname {} -technology illumina -type illumina -mates {},{} > {}".format(insert_size, accession, reads1, reads2, frg), shell=True))
+			buffer.write(subprocess.check_output("fastqToCA -insertsize {} 20 -libraryname {} -technology illumina-long -type illumina -mates {},{} > {}".format(insert_size, accession, reads1, reads2, frg), shell=True))
 		elif 'PacBio' in data_type:
 			raise ValueError("PacBio data not yet supported.")
+		elif 'Minion' in data_type:
+			buffer.write(subprocess.check_output("fastqToCA -insertsize {} 20 -libraryname {} -technology sanger -type sanger -reads {} > {}".format(insert_size, accession, reads1, frg), shell=True))
 		else: #454 or Iontorrent
 			buffer.write(subprocess.check_output("fastqToCA -insertsize {} 20 -libraryname {} -technology 454 -reads {} > {}".format(insert_size, accession, reads1, frg), shell=True))
 

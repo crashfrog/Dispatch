@@ -274,7 +274,7 @@ def quast_compare(path, fastas, gi=None, callback=None, update_callback=lambda d
 					except OSError:
 						pass
 		callback("Running QUAST with reference gi{}...".format(gi))
-		subprocess.check_call("quast {} -R {}/reference.fasta -G {}/reference.genes -o {} --labels {} --gene-finding -t 8".format(
+		subprocess.check_call("quast {} -R {}/reference.fasta -G {}/reference.genes -o {} --labels {} --gene-finding".format(
 							  " ".join([os.path.join(path, r['fasta_file']) for r in fastas]),
 							  temp_dir,
 							  temp_dir,

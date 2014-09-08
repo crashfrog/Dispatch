@@ -5,6 +5,7 @@ import subprocess
 import MySQLdb as mysqldb
 import tempfile
 import datetime
+import shutil
 
 import matplotlib
 matplotlib.use('Agg')
@@ -36,12 +37,30 @@ def qa_worker(job_id, fastq, job_db=None, callback=lambda s: None):
 	if not job_db:
 		job_db = mysqldb.connect(host='xserve15.fda.gov', user='job_user', passwd='job_user', db='Jobs')
 	job = job_db.cursor()
-	stats = fastq.replace('.fastq', '.stats')
-	plot = fastq.replace('.fastq', '.png')
-	summary = fastq.replace('.fastq', '.summary.stats')
-	q_plot = fastq.replace('.fastq', '.qscore.png')
+	stats = fastq.replace('.fastq', '.stats').replace('.gz', '')
+	plot = fastq.replace('.fastq', '.png').replace('.gz', '')
+	summary = fastq.replace('.fastq', '.summary.stats').replace('.gz', '')
+	q_plot = fastq.replace('.fastq', '.qscore.png').replace('.gz', '')
+	
+	job.execute("SELECT accession FROM qualities WHERE id = '{}';".format(job_id))
+	job_accession = job.fetchone()[0]
+	
+	
+	tempdir = ""
 	
 	try:
+	
+		if '.gz' in fastq:
+			import gzip
+			tempdir = tempfile.mkdtemp()
+			fastq_basename = os.path.basename(fastq).replace('.gz', '')
+			callback("Unzipping reads into {}".format(tempdir))
+			with gzip.open(fastq) as r_in, open(os.path.join(tempdir, fastq_basename), 'w') as r_out:
+				for l in r_in:
+					r_out.write(l)
+			fastq = os.path.join(tempdir, fastq_basename)
+	
+	
 		with tempfile.NamedTemporaryFile() as temp_file:
 			callback("QA started on {}".format(fastq))
 			job.execute("UPDATE qualities SET status = 'running qa' WHERE id = '{}';".format(job_id))
@@ -59,7 +78,16 @@ def qa_worker(job_id, fastq, job_db=None, callback=lambda s: None):
 			#print result
 			callback("Getting file size")
 			file_size = os.path.getsize(fastq)
-			num_reads = subprocess.check_output("grep -c '>' {}".format(fastq), shell=True)
+			num_reads = subprocess.check_output("grep -c '^@' {}".format(fastq), shell=True)
+			try:
+				import xmlrpclib
+				s = xmlrpclib.ServerProxy('http://cfe1019692:8080')
+				num_reads = int(num_reads)
+				if num_reads < 37500:
+					s.fire_event('QaqcFailureEvent', {'sample_id':job_accession, 'issues':['Insufficient yield ({} reads)'.format(num_reads),]})
+					s.update_cfsan(s.get(job_accession)['Key'], 'QaIssues', s.get(job_accession)['QaIssues'] + "Insuff. reads ({})".format(num_reads))
+			except:
+				pass
 		# Jamie's statting/plotting summary
 		
 		job.execute("UPDATE qualities SET status = 'running summary and plot' WHERE id = '{}';".format(job_id))
@@ -114,7 +142,9 @@ def qa_worker(job_id, fastq, job_db=None, callback=lambda s: None):
 
 	except Exception as e:
 		callback("Error:{} {}".format(type(e), e))
-		
+		print stats, plot, summary, q_plot
+		import traceback, sys
+		traceback.print_exc(sys.stdout)
 		try:
 			job.execute("UPDATE qualities SET status='other_exception', exception='{}' WHERE id = '{}';".format(str(e).encode('string_escape'), job_id))
 		except mysqldb.ProgrammingError as e:
@@ -133,8 +163,10 @@ def qa_worker(job_id, fastq, job_db=None, callback=lambda s: None):
 	finally:
 		try:
 			os.remove(temp_file.name)
-		except OSError:
+		except (OSError, UnboundLocalError):
 			pass
+		if tempdir:
+			shutil.rmtree(tempdir)
 
 if __name__ == "__main__":
 
@@ -142,7 +174,7 @@ if __name__ == "__main__":
 	job_db = mysqldb.connect(host= 'xserve15.fda.gov', user='job_user', passwd='job_user', db='Jobs') #localhost
 	job = job_db.cursor(mysqldb.cursors.DictCursor)
 
-	job.execute("SELECT accession, file_path, file_root, id FROM qualities WHERE (status = 'ready' or status LIKE '%_exception');")
+	job.execute("SELECT accession, file_path, file_root, id FROM qualities WHERE (status = 'ready' or status = 'priority') ORDER BY status;")
 	
 	for row in job.fetchall():
 		fastq = os.path.join(filestore, row['file_path'], row['file_root'])

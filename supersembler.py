@@ -19,7 +19,7 @@ description = "Justin's round-robin assembler shoot-out. Runs them all and selec
 
 core_load = 8
 
-dont_use = ("Supersembler", "Velvet_optimize")
+dont_use = ("Supersembler", "Velvet_optimize", "Mix")
 
 supports = ('MiSeq', 'IonTorrent')
 

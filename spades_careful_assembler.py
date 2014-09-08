@@ -104,9 +104,9 @@ def assemble(path, accession, fasta_file_name=None, callback=lambda s: None, upd
 		#spades.main(argv)
 		
 		if 'reads2' in kwargs and kwargs['reads2']:
-			subprocess.check_call("{spades_exec}spades -t 8 -m 64 -1 {reads1} -2 {reads2} -o {temp_dir}".format(spades_exec=spades_exec, **kwargs), shell=True)
+			subprocess.check_call("{spades_exec}spades -t 8 -m 64 -1 {reads1} -2 {reads2} -o {temp_dir} --careful".format(spades_exec=spades_exec, **kwargs), shell=True)
 		else:
-			subprocess.check_call("{spades_exec}spades --iontorrent -t 8 -m 64 -s {reads1} -o {temp_dir}".format(spades_exec=spades_exec, **kwargs), shell=True)
+			subprocess.check_call("{spades_exec}spades --iontorrent -t 8 -m 64 -s {reads1} -o {temp_dir} --careful".format(spades_exec=spades_exec, **kwargs), shell=True)
 		
 		update_callback({"k_value":'21, 33, 55, 77, 99, 127'})
 		

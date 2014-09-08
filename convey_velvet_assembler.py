@@ -10,27 +10,30 @@ exp_cov_expression = r"\[\d*\.\d*\] Estimated Coverage = (?P<coverage>\d*\.\d*)"
 exp_cut_expression = r"\[\d*\.\d*\] Estimated Coverage cutoff = (?P<coverage_cutoff>\d*\.\d*)"
 parse_expression = r"""Final graph has (?P<num_nodes>\d*) nodes and n50 of (?P<n50>\d*), max (?P<max>\d*), total (?P<num_bases>\d*), using (?P<num_reads>\d*)/(?P<total_reads>\d*) reads"""
 
-description = "The canonical de Brujin graph assembler. Parameterized for paired-end or single-end sequencing."
+description = "Convey's accellerated version of the canonical de Brujin graph assembler. Parameterized for paired-end or single-end sequencing."
 
 core_load = 1 #number of CPU cores this assembler will max out
 
 supports = ('MiSeq','IonTorrent')
 
 def assemble(accession, path, reads1, reads2=None, insert_size=500, minimum_contig_length=200, k_value=171, exp_coverage='auto', debug=True, callback=lambda s: None, fasta_file_name=None, **kwargs):
+
+	raise NotImplementedError()
+
 	start_time = datetime.datetime.now()
 	
 	#get velvet version info
-	version = re.search(r"Version (\d*\.\d*\.\d*)", subprocess.check_output("/usr/local/bin/velveth --version", shell=True)).groups()[0]
+	version = re.search(r"Version (\d*\.\d*\.\d*)", subprocess.check_output("velveth --version", shell=True)).groups()[0]
 	
 
 	if reads2:
-		velveth = "/usr/local/bin/velveth {}/{} {} -fastq -shortPaired -separate {} {}"
+		velveth = "cnygc {}/{} {} -fastq -shortPaired -separate {} {}"
 		velveth_expression = velveth.format(path, accession, k_value, reads1, reads2)
 	else:
-		velveth = "/usr/local/bin/velveth {}/{} {} -fastq -short {}"
+		velveth = "cnygc {}/{} {} -fastq -short {}"
 		velveth_expression = velveth.format(path, accession, k_value, reads1)
 	
-	velvetg = "/usr/local/bin/velvetg {}/{} -ins_length {} -min_contig_lgth {} -exp_cov {} -cov_cutoff auto -very_clean yes -scaffolding no"
+	velvetg = "velvetg {}/{} -ins_length {} -min_contig_lgth {} -exp_cov {} -cov_cutoff auto -very_clean yes -scaffolding no"
 	velvetg_expression = velvetg.format(path, accession, insert_size, minimum_contig_length, exp_coverage)
 	
 	#print "assembling ", reads1, reads2

@@ -11,16 +11,20 @@ import clc_assembler
 import wgs_assembler
 import supersembler
 import spades_assembler
+import spades_careful_assembler
 #import masurca_assembler
 import mira_assembler
 import worst_assembler
 #import idba_assembler
+import mix_assembler
+#import sga_assembler
 
 import basic_trimmer
 import katz_trimmer
 import quality_trimmer
 import fasta_statter
 import ten_each_end_trimmer
+import kmergenie_trimmer
 
 import datetime
 from time import sleep
@@ -29,13 +33,15 @@ import shutil
 import os
 import sys
 
+import signal
+
 """
 	
 	Assembly Dispatch Daemon
 	May 1, 2013
 	Justin Payne
 	
-	Assembly job dispatch daemon, single-threaded version. Interacts with Pipleline Job DB.
+	Assembly job dispatch daemon, single-threaded version. Interacts with Pipeline Job DB.
 	Assembly bindings are written as submodules and encapsulate the shell commands necessary
 	to operate the assemblers and capture statistics on an automated basis.
 	
@@ -44,33 +50,49 @@ import sys
 
 """
 
+def sigterm_handler(signum, frame):
+	"Hook into SIGTERM to try to reset active jobs."
+	raise KeyboardInterrupt()
+	
+signal.signal(signal.SIGTERM, sigterm_handler)
+
 def null_trimmer(assembler, **kwargs):
-	"No trimming."
+	"Do-nothing trim function to support no trimming."
 	return assembler.assemble(**kwargs)
 
-assembler_dict = {'Velvet':velvet_assembler_notrimmer,
+assembler_dict = { #comment in or out to enable or disable assemblers.
+				  'Velvet':velvet_assembler_notrimmer,
 				  'Supersembler':supersembler,
 				  'Celera':wgs_assembler,
 				  'Velvet_optimize':velvet_optimize,
 				  'ABySS':abyss_assembler,
 				  'SPAdes':spades_assembler,
+				  'SPAdes_careful':spades_careful_assembler,
 				  'CLC':clc_assembler,
 				  #'MaSuRCA':masurca_assembler,
+				  #'SGA':sga_assembler,
 				  'Mira':mira_assembler,
 				  #'IDBA-UD':idba_assembler,
-				  'WORST':worst_assembler
+				  'Mix':mix_assembler,
+				  'WORST':worst_assembler, #Misassembly tool, negative control for assembly comparison tools like QUAST or GAGE.
+				  #'Convey_velvet':convey_velvet_assembler,
+				  #'Convey_velver_optimize':convey_velvet_optimize,
 				  }
 				  
 trimmer_dict = {'no_trimmer':null_trimmer, #trimmers can be in this module or others
 				'basic_trimmer':basic_trimmer.trim,
 				'katz_trimmer':katz_trimmer.trim, #currently unsupported
 				'quality_trimmer':quality_trimmer.trim,
-				'ten_each_end_trimmer':ten_each_end_trimmer.trim
+				'ten_each_end_trimmer':ten_each_end_trimmer.trim,
+				'kmergenie_trimmer':kmergenie_trimmer.trim
 				}
 
 
 
 default_root = '/shared'
+
+filepaths = {'cfsan_genomes':'/shared/gn2/CFSANgenomes',
+			 'genome3':'/shared/gn3'}
 
 
 def query(s, commit_function=lambda l: True):
@@ -93,6 +115,7 @@ def query(s, commit_function=lambda l: True):
 				  
 def update_status_callback(id, message, status='Running',):
 	sys.__stdout__.write("[{}] {}\n".format(datetime.datetime.today().ctime(), message)) #in case some assembler redirects print/stdout
+	sys.__stdout__.flush()
 	if len(message) > 80:
 		query("UPDATE assemblies SET status='{status}', exception_note='{message}' WHERE id='{id}';".format(status=status.encode('string_escape'), message=message.encode('string_escape'), id=id))
 	else:
@@ -100,8 +123,32 @@ def update_status_callback(id, message, status='Running',):
 
 
 def assemble(job, debug=True):
+	"Worker function."
 	tempdir = None
 	try:
+		try:
+			import os
+			this_worker = os.environ.get('HOSTNAME', os.environ.get('CDC_LOCALHOST', "Generic PIPELINE WORKER"))
+			pid = os.getpid()
+		except:
+			import traceback
+			traceback.print_exc()
+			this_worker = 'Generic PIPELINE worker.'
+			pid = 'pid unknown'
+			
+		query("UPDATE assemblies SET status='running', exception_note='', dateStarted='{}', worker='{} ({})' WHERE id = '{}'".format(datetime.datetime.now().isoformat(), this_worker, pid, job['id']))
+		
+		
+		try:
+			import assembly_logging
+			print "Assembly logging supported."
+		except Exception as e:
+			print "Assembly logging not supported."
+			if debug:
+				import traceback
+				traceback.print_exc(sys.stdout)
+		
+
 		path = os.path.abspath(os.path.join(default_root, job['path_1'], '../asm'))
 		if not os.path.exists(path):
 			os.mkdir(path)
@@ -116,11 +163,11 @@ def assemble(job, debug=True):
 			for (k, v) in d.items():
 				print "[{}]\tmodule override: {}='{}'".format(datetime.datetime.today().ctime(), k, v)
 				query("UPDATE assemblies SET {k}='{v}' WHERE id='{i}';".format(i=job['id'], k=k, v=str(v).encode('string_escape')))
-		query("UPDATE assemblies SET status='running', exception_note='' WHERE id = '{}'".format(job['id']))
+		
 		
 		if "gz" in job['file_1']:
 			#unzip file to tempdir
-			import tempfile
+			import assembly_resources as tempfile
 			import gzip
 			tempdir = tempfile.mkdtemp()
 			update_status_callback(job['id'], 'Unzipping reads in {}...'.format(tempdir))
@@ -139,6 +186,7 @@ def assemble(job, debug=True):
 			from Bio import SeqIO
 			import tempfile
 			tempdir = tempfile.mkdtemp()
+			update_status_callback(job['id'], 'Converting reads in {}...'.format(tempdir))
 			with open(os.path.join(default_root, job['path_1'], job['file_1']), 'rb') as r_in, open(os.path.join(tempdir, job['file_1'].replace(".sff", ".fastq")), 'w') as r_out:
 				for c in SeqIO.parse(r_in, 'sff'):
 					r_out.write(c.format('fastq'))
@@ -149,7 +197,17 @@ def assemble(job, debug=True):
 		reads2=None
 		if job['file_2']:
 			reads2=os.path.join(default_root, job['path_2'], job['file_2'])
-		
+			
+
+		def logging_callback(message, **kw):
+			update_status_callback(job['id'], message, **kw)
+			try:
+				with assembly_logging.open(path) as logfile:
+					logfile.write("[{}] {}\n".format(datetime.datetime.today().ctime(), message))
+			except Exception as e:
+				if debug:
+					import traceback
+					traceback.print_exc(sys.stdout)
 		results = trimmer(assembler=assembler,
 						  accession=job['accession'], path=path, 
 						  reads1=reads1, 
@@ -158,7 +216,7 @@ def assemble(job, debug=True):
 						  minimum_contig_length=job['min_contig_length'] or 200, 
 						  k_value=job['k_value'] or 177, 
 						  exp_coverage=exp_coverage or 'auto',
-						  callback=lambda m, **s: update_status_callback(job['id'], m, **s),
+						  callback=logging_callback,
 						  assembler_dict=assembler_dict,
 						  update_callback=update_callback,
 						  statter=statter,
@@ -166,14 +224,15 @@ def assemble(job, debug=True):
 						  ref_url=job['ref_url'],
 						  data_type=job['data_type'],
 						  debug=debug,
-						  trimmer_args=job['trimmer_args']
+						  trimmer_args=job['trimmer_args'],
+						  fasta_file_name = job['fasta_file'] or job['accession'] + '.fasta'
 						  )
 		try:
 			job['job_type'] = 'Bowtie read mapping'
 			results['lib_insert_length'] = fasta_statter.read_map(os.path.join(path, results['fasta_file']), 
 																  os.path.join(default_root, job['path_1'], job['file_1']), 
 																  os.path.join(default_root, job['path_2'], job['file_2']), 
-																  callback=lambda m: update_status_callback(job['id'], m))
+																  callback=logging_callback)
 		except ZeroDivisionError:
 			update_callback({"exception_note":"Bowtie returned no reads mapped to assembly; insert size not calculated.", 'lib_insert_length':'Unknown'})
 	except subprocess.CalledProcessError as e:
@@ -187,6 +246,19 @@ def assemble(job, debug=True):
  		query("UPDATE assemblies SET status='ready', exception_note='canceled by keyboard interrupt' WHERE id = '{}'".format(job['id']))
  		print "Terminated by keyboard interrupt."
  		quit()
+ 	except IOError as e:
+ 		import errno
+ 		if e.errno == errno.ENOSPC:
+			query("UPDATE assemblies SET status='ready', exception_note='stopped on out-of-space error' WHERE id = '{}'".format(job['id']))
+			print "Out of scratch space; terminating."
+			quit()
+		else:
+			print job['job_type'], ": ", type(e), e
+			if debug:
+				import traceback
+				traceback.print_exc(sys.stdout)
+				quit()
+			query("UPDATE assemblies SET status = 'exception', exception_note='{}:{}' WHERE id = '{}';".format(str(type(e)).encode('string_escape'), str(e).encode('string_escape'), job['id']))
  	except Exception as e:
  		print job['job_type'], ": ", type(e), e
  		if debug:
@@ -211,20 +283,35 @@ UPDATE assemblies SET status='finished',
 												   id = job['id'],
 												   **results))
 	finally:
-		if tempdir:
+		try:
+			print "removing {}...".format(tempdir)
 			shutil.rmtree(tempdir)
+			#update_status_callback(job['id'], "finished")
+		except Exception as e:
+			print e
 			
 def main(loop=False):
-	results = query("SELECT * FROM assemblies WHERE status='ready' LIMIT 1;")
+	#build list of jobs this instance can perform
+	
+	import random
+	sleep(10 * random.random())
+	
+	jobs_available = ", ".join(["'{}'".format(j) for j in assembler_dict.keys()]) #('Velvet', 'CLC', etc)
+	
+	job_queue_query = "SELECT * FROM assemblies WHERE (status='ready' OR status='priority') AND job_type IN ({}) ORDER BY status ASC LIMIT 1;".format(jobs_available)
+	
+	results = query(job_queue_query)
 	while True:
 		while len(results) > 0:
-			job = results[0]										 
+			job = results[0]	
+			job['path_1'] = job['path_1'].format(**filepaths)
+			job['path_2'] = job['path_2'].format(**filepaths)								 
 			assemble(job, debug=('-debug' in sys.argv))
-			results = query("SELECT * FROM assemblies WHERE status='ready' LIMIT 1;")
+			results = query(job_queue_query)
 		
 		if not loop:
 			break
-		sleep(30)
+		sleep(10 * random.random())
 		
 															 
 if __name__ == "__main__":
@@ -233,15 +320,16 @@ if __name__ == "__main__":
 		print "Starting test..."
 		def query(s, f=lambda l: True):
 			print "[SQL Cmd] {} ({})".format(s, f(0))
-		job1 = {'id':'TEST', #fake job
-				'job_type':'Supersembler',
+		job1 = {'id':'TEST', #fake job,
+				'data_type':'MiSeq',
+				'job_type':'WORST',
 				'path_1':'/shared/gn2/CFSANgenomes/CFSAN001656/CFSAN001656_01/',
 				'file_1':'CFSAN001656_S8_L001_R1_001.fastq',
 				'path_2':'/shared/gn2/CFSANgenomes/CFSAN001656/CFSAN001656_01/',
 				'file_2':'CFSAN001656_S8_L001_R2_001.fastq',
 				'ref_file':'',
 				'ref_url':'',
-				'trimmer':'null_trimmer',
+				'trimmer':'kmergenie_trimmer',
 				'trimmer_args':'',
 				'insert_size':500,
 				'min_contig_length':200,
@@ -252,7 +340,7 @@ if __name__ == "__main__":
 				'dateCompleted':'',
 				'accession':'CFSAN001656_01',
 				'run_id':'',
-				'fasta_file':'',
+				'fasta_file':'test.fasta',
 				'statter':'stat_fasta',
 				'average_coverage':'20X',
 				'num_contigs':'',
@@ -265,11 +353,12 @@ if __name__ == "__main__":
 	
 	
 	#update options
-	query("TRUNCATE TABLE assembly_options;")
 	for (assembler_name, assembler_module) in assembler_dict.items():
-		query("INSERT INTO assembly_options (option_type, option_value, option_description) VALUES ('assembler', '{}', '{} (Supports {})');".format(assembler_name, assembler_module.description.encode('string_escape'), ', '.join(assembler_module.supports)))
+		if not query("SELECT option_value FROM assembly_options WHERE option_value = '{}';".format(assembler_name)):
+			query("INSERT INTO assembly_options (option_type, option_value, option_description) VALUES ('assembler', '{}', '{} (Supports {})');".format(assembler_name, assembler_module.description.encode('string_escape'), ', '.join(assembler_module.supports)))
 	for (trimmer, trim_func) in trimmer_dict.items():
-		query("INSERT INTO assembly_options (option_type, option_value, option_description, option_supports) VALUES ('trimmer', '{}', '{}', 'All');".format(trimmer, str(trim_func.__doc__).encode('string_escape')))
+		if not query("SELECT option_value FROM assembly_options WHERE option_value = '{}';".format(trimmer)):
+			query("INSERT INTO assembly_options (option_type, option_value, option_description, option_supports) VALUES ('trimmer', '{}', '{}', 'All');".format(trimmer, str(trim_func.__doc__).encode('string_escape')))
 
 	#run assemblies
 	try:
@@ -288,5 +377,5 @@ if __name__ == "__main__":
 	except (ImportError, ValueError) as e:
 		print "Daemon module not found; running in normal mode."
 		print e
-		main(True)
+		main(False)
 	

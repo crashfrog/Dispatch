@@ -3,7 +3,8 @@
 import subprocess
 import shutil
 import os
-import tempfile
+#import tempfile
+import assembly_resources as tempfile
 import datetime
 import fasta_statter
 
